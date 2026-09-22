@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+#
+# sleepless - keep the screen and system awake until told otherwise.
+#
+# Works purely by INHIBITION, never by configuration: a holder process holds
+# logind and PowerDevil locks for exactly as long as it lives. No power
+# management setting is ever read or written, so there is nothing to save and
+# nothing to restore. If the holder dies for any reason, normal power
+# management simply resumes.
+#
+#   systemd-inhibit --what=idle:sleep   -> logind's own idle/sleep handling
+#   kde-inhibit --power --screenSaver   -> PowerDevil: dimming, display off,
+#                                          screen locking and suspend
+#
+# Usage: sleepless {start|stop|toggle|status} [minutes]
+
+set -euo pipefail
+
+SELF=$(readlink -f "$0")
+APP="Sleepless"
+DEFAULT_MINUTES=180
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/sleepless"
+PID_FILE="$STATE_DIR/pid"
+PGID_FILE="$STATE_DIR/pgid"
+NEXT_FILE="$STATE_DIR/next_prompt_at"
+
+# ---------------------------------------------------------------- helpers ---
+
+# Render a number of seconds as "3h", "1h 30m" or "45m".
+human() {
+    local total=$1 h m
+    h=$((total / 3600))
+    m=$(((total % 3600) / 60))
+    if [ "$h" -gt 0 ] && [ "$m" -gt 0 ]; then
+        echo "${h}h ${m}m"
+    elif [ "$h" -gt 0 ]; then
+        echo "${h}h"
+    else
+        echo "${m}m"
+    fi
+}
+
+running() {
+    local pid
+    [ -r "$PID_FILE" ] || return 1
+    pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+require_tools() {
+    local missing=()
+    for t in systemd-inhibit kde-inhibit notify-send; do
+        command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "$APP: missing required tool(s): ${missing[*]}" >&2
+        echo "Install them with: sudo pacman -S --needed systemd kde-cli-tools libnotify" >&2
+        return 1
+    fi
+}
+
+# ----------------------------------------------------------------- commands ---
+
+# The long-lived holder. Everything above it in the process chain
+# (systemd-inhibit -> kde-inhibit) stays alive only while this runs, so
+# returning from this function releases every lock.
+cmd_hold() {
+    local minutes=${1:-$DEFAULT_MINUTES}
+    local interval=$((minutes * 60))
+    local started_at ans elapsed
+
+    mkdir -p "$STATE_DIR"
+    echo $$ > "$PID_FILE"
+    ps -o pgid= -p $$ | tr -d '[:space:]' > "$PGID_FILE"
+    started_at=$(date +%s)
+
+    # Clean up whichever way we leave: an explicit "I'm done", or a signal
+    # from `sleepless stop` taking out the whole process group.
+    trap 'rm -rf "$STATE_DIR"; exit 0' TERM INT HUP
+    trap 'rm -rf "$STATE_DIR"' EXIT
+
+    while :; do
+        echo $(($(date +%s) + interval)) > "$NEXT_FILE"
+
+        # Backgrounded so signals are handled immediately rather than after
+        # the sleep returns.
+        sleep "$interval" &
+        wait $! || true
+
+        elapsed=$(($(date +%s) - started_at))
+
+        # -u critical makes Plasma hold the notification on screen until it is
+        # acted on. notify-send implies --wait with -A and prints the chosen
+        # action to stdout.
+        ans=$(notify-send \
+                --app-name="$APP" \
+                --urgency=critical \
+                --icon=system-suspend-inhibited \
+                --action=keep="Still playing" \
+                --action=done="I'm done" \
+                "$APP is still on" \
+                "Your screen has been kept awake for $(human "$elapsed"). Keep going?" \
+              2>/dev/null) || ans=""
+
+        # ONLY an explicit "I'm done" switches off. Anything else - the
+        # notification being closed, or notify-send failing outright - falls
+        # through to another full interval, so this can neither busy-loop nor
+        # turn itself off behind your back.
+        [ "$ans" = "done" ] && break
+    done
+}
+
+cmd_start() {
+    local minutes=${1:-$DEFAULT_MINUTES}
+    local i=0
+
+    if running; then
+        echo "$APP is already on."
+        return 0
+    fi
+
+    require_tools
+
+    rm -rf "$STATE_DIR"
+    mkdir -p "$STATE_DIR"
+
+    # setsid puts the chain in its own process group so `stop` can take out
+    # every layer at once, and so it survives a plasmashell restart.
+    setsid systemd-inhibit \
+            --what=idle:sleep \
+            --who="$APP" \
+            --why="Keeping the screen awake" \
+        kde-inhibit --power --screenSaver \
+        "$SELF" __hold "$minutes" >/dev/null 2>&1 &
+
+    # The holder records its own pid/pgid; wait briefly for it to appear.
+    while [ $i -lt 60 ]; do
+        if running; then
+            echo "$APP on - check-in in $(human $((minutes * 60)))."
+            return 0
+        fi
+        sleep 0.05
+        i=$((i + 1))
+    done
+
+    echo "$APP failed to start." >&2
+    rm -rf "$STATE_DIR"
+    return 1
+}
+
+cmd_stop() {
+    local pgid pid
+
+    if ! running; then
+        echo "$APP is already off."
+        rm -rf "$STATE_DIR"
+        return 0
+    fi
+
+    pgid=$(cat "$PGID_FILE" 2>/dev/null || true)
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+
+    # Signal the whole group so systemd-inhibit, kde-inhibit, the holder and
+    # its sleep all go down together and every lock is released.
+    if [ -n "$pgid" ]; then
+        kill -TERM "-$pgid" 2>/dev/null || true
+    elif [ -n "$pid" ]; then
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+
+    # Give it a moment, then insist.
+    local i=0
+    while [ $i -lt 40 ] && running; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    if running && [ -n "$pgid" ]; then
+        kill -KILL "-$pgid" 2>/dev/null || true
+    fi
+
+    rm -rf "$STATE_DIR"
+    echo "$APP off - normal power management resumed."
+}
+
+cmd_status() {
+    local now next left
+    if running; then
+        now=$(date +%s)
+        next=$(cat "$NEXT_FILE" 2>/dev/null || echo "$now")
+        left=$((next - now))
+        [ "$left" -lt 0 ] && left=0
+        echo "on $left"
+        return 0
+    fi
+    echo "off"
+    return 1
+}
+
+cmd_toggle() {
+    if running; then
+        cmd_stop
+    else
+        cmd_start "${1:-$DEFAULT_MINUTES}"
+    fi
+}
+
+# -------------------------------------------------------------------- main ---
+
+case "${1:-}" in
+    start)   shift; cmd_start "${1:-$DEFAULT_MINUTES}" ;;
+    stop)    cmd_stop ;;
+    toggle)  shift; cmd_toggle "${1:-$DEFAULT_MINUTES}" ;;
+    status)  cmd_status ;;
+    __hold)  shift; cmd_hold "${1:-$DEFAULT_MINUTES}" ;;
+    *)
+        cat >&2 <<USAGE
+Usage: sleepless {start|stop|toggle|status} [minutes]
+
+  start [minutes]   Block sleep, screen blanking and locking. Prompts after
+                    [minutes] (default $DEFAULT_MINUTES) to ask if you are done.
+  stop              Release everything; normal power management resumes.
+  toggle [minutes]  Start if off, stop if on.
+  status            Print "on <seconds-until-prompt>" or "off".
+USAGE
+        exit 2
+        ;;
+esac

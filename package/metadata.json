@@ -1,0 +1,21 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "eulercool@gmail.com",
+                "Name": "Conor Marco"
+            }
+        ],
+        "Category": "System Services",
+        "Description": "Block sleep, screen blanking and locking, with a periodic check-in",
+        "Icon": "system-suspend-inhibited",
+        "Id": "com.conormarco.sleepless",
+        "License": "GPL-2.0+",
+        "Name": "Sleepless",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml",
+    "X-Plasma-NotificationAreaCategory": "SystemServices"
+}
