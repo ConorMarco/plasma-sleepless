@@ -128,17 +128,40 @@ PlasmoidItem {
             anchors.fill: parent
             rows: 1
 
-            Kirigami.Icon {
+            Item {
                 Layout.alignment: Qt.AlignCenter
                 implicitWidth: Kirigami.Units.iconSizes.smallMedium
                 implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                // Breeze's own pair for this exact state; the "inhibited"
-                // variant carries a red slash, so the state is legible
-                // without any tinting of our own.
-                source: root.awake ? "system-suspend-inhibited"
-                                   : "system-suspend-uninhibited"
-                fallback: "system-suspend"
-                active: mouse.containsMouse
+
+                // A bed: this machine is free to sleep. Breeze's own
+                // suspend-inhibition pair was too subtle at panel size - both
+                // states were the same padlock glyph differing only by a thin
+                // slash - so Sleepless ships its own bolder silhouette.
+                // isMask tints it with the theme's text colour, so it stays
+                // correct in both light and dark schemes.
+                Kirigami.Icon {
+                    anchors.fill: parent
+                    source: Qt.resolvedUrl("../icons/bed.svg")
+                    isMask: true
+                    color: Kirigami.Theme.textColor
+                    opacity: mouse.containsMouse ? 1.0 : 0.92
+                }
+
+                // Red slash over the bed: sleep is blocked. Drawn here rather
+                // than baked into a second SVG so it always picks up the
+                // theme's negative colour.
+                Rectangle {
+                    visible: root.awake
+                    anchors.centerIn: parent
+                    width: Math.round(parent.width * 1.24)
+                    height: Math.max(2, Math.round(parent.height * 0.11))
+                    radius: height / 2
+                    // Leans upper-left to lower-right, matching Breeze's own
+                    // "disabled" slashes (muted volume, disconnected network,
+                    // suspend-inhibited), which all lean this way.
+                    rotation: 45
+                    color: Kirigami.Theme.negativeTextColor
+                }
             }
         }
     }

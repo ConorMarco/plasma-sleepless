@@ -11,8 +11,15 @@ build.
 
 ![off](doc/off.png) → click → ![on](doc/on.png)
 
-The icon is Breeze's own suspend-inhibition pair, so it follows your icon theme
-and colour scheme. A red slash across it means sleep is blocked.
+A bed means the machine is free to sleep; a red slash across it means sleep is
+blocked. The bed is drawn with `isMask`, so it takes the theme's text colour and
+stays correct in light and dark schemes, and the slash uses the theme's negative
+colour. The slash leans the same way as Breeze's own disabled-state icons
+(muted volume, disconnected network).
+
+Breeze's built-in `system-suspend-uninhibited` / `system-suspend-inhibited` pair
+was tried first and rejected: both states are the same padlock glyph differing
+only by a thin diagonal, which is unreadable at panel size.
 
 ## What it blocks
 
