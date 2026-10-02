@@ -104,6 +104,28 @@ The widget polls `status`, so toggling from a terminal updates the icon too.
 - `libnotify` (`notify-send` 0.8+, for the check-in buttons)
 - `systemd` (`systemd-inhibit`)
 
+## Verifying it works
+
+Do **not** trust PowerDevil's D-Bus inhibition queries. As of `powerdevil`
+6.7.5-2 they are broken: `PolicyAgent.HasInhibition`,
+`PolicyAgent.ActiveInhibitions` and `PowerManagement.Inhibit.HasInhibit` all
+report nothing even while inhibitions are held. `Inhibit()` still returns valid,
+incrementing cookies, and the inhibition itself still works - only the readback
+is broken. It persists across a PowerDevil restart.
+
+The reliable check is behavioural: shorten `DimDisplayIdleTimeoutSec` for both
+the `[AC]` and `[Battery]` profiles, restart `plasma-powerdevil`, force
+brightness to full, then stay idle and watch
+`/sys/class/backlight/*/brightness`. With Sleepless on it should hold; with it
+off it should drop at the timeout. Two traps when doing this by hand: run a
+control phase with Sleepless off, or you are proving nothing, and force
+brightness back to full before each phase, or an already-dimmed screen looks
+like a pass.
+
+Measured this way on powerdevil 6.7.5-2, Sleepless holds the display at full
+brightness past a 20s dim timeout, while the same test with it off dims on
+schedule.
+
 ## Note for Plasma 6.7
 
 A plasmoid that defines only a `compactRepresentation` and no
